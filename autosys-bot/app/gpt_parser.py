@@ -12,37 +12,30 @@ client = AzureOpenAI(
 )
 
 async def parse_command(user_message: str):
-    """
-    Uses Azure OpenAI to parse a natural language command
-    into an action and multiple job names.
-
-    Example:
-        Input: "Please force start job alpha, job beta and job gamma"
-        Output:
-        {
-            "action": "force_start",
-            "job_names": ["alpha", "beta", "gamma"]
-        }
-    """
-
     system_prompt = """
     You are an AutoSys command parser.
-    Return ONLY valid JSON (no markdown, no code blocks, no explanation).
 
-    Format:
+    Understand natural language instructions and extract ALL actions and ALL job names.
+
+    Return ONLY valid JSON in this EXACT format:
+
     {
-        "action": "force_start | on_ice | off_ice | on_hold | off_hold | status",
-        "job_names": ["job1", "job2", "job3"]
+        "actions": [
+            { "action": "force_start | on_hold | off_hold | on_ice | off_ice | status",
+              "job_name": "string"
+            }
+        ]
     }
 
     Rules:
-    - Always output JSON only.
-    - Extract all mentioned job names (comma or 'and' separated).
-    - 'job_names' must always be a list, even if there is only one job.
-    - If action not found, return "action": "unknown".
+    - Convert "run job", "start job" → force_start
+    - Convert "hold", "on hold", "put on hold" → on_hold
+    - Convert "ice", "on ice" → on_ice
+    - Convert "off ice" → off_ice
+    - Convert "off hold" → off_hold
+    - Do NOT include explanations, code blocks or markdown.
     """
 
-    # 🔹 Call Azure OpenAI
     response = client.chat.completions.create(
         model=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
         messages=[
@@ -52,29 +45,10 @@ async def parse_command(user_message: str):
         temperature=0
     )
 
-    raw = response.choices[0].message.content.strip()
+    content = response.choices[0].message.content.strip()
+    content = content.replace("```", "").replace("json", "").strip()
 
-    # Cleanup safety
-    raw = raw.replace("```", "").replace("json", "").strip()
+    start = content.find("{")
+    end = content.rfind("}") + 1
 
-    # Extract only JSON portion if extra text appears
-    start = raw.find("{")
-    end = raw.rfind("}") + 1
-    cleaned = raw[start:end]
-
-    try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        print("[GPT PARSER ERROR] Invalid JSON:", raw)
-        raise ValueError(f"Parser failed to produce valid JSON: {e}")
-
-    # Ensure structure validity
-    if "job_names" not in parsed:
-        parsed["job_names"] = []
-    elif isinstance(parsed["job_names"], str):
-        parsed["job_names"] = [parsed["job_names"]]
-
-    if "action" not in parsed:
-        parsed["action"] = "unknown"
-
-    return parsed
+    return json.loads(content[start:end])

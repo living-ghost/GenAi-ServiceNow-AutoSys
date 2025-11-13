@@ -29,54 +29,48 @@ async def chat(message: dict):
     username = message.get("user", "unknown_user")
 
     parsed = await parse_command(user_msg)
-    action = parsed["action"]
-    job_names = parsed["job_names"]
+    actions_list = parsed["actions"]
 
-    print(f"[CHAT] {username} triggered '{action}' for jobs: {', '.join(job_names)}")
+    results = []
+    jobs_involved = set()
 
-    # ✅ Validate user existence
-    if not user_exists(username):
-        return {"status": "failed", "error": f"User '{username}' not registered"}
+    # Validate and execute each job
+    for action_item in actions_list:
+        action = action_item["action"]
+        job = action_item["job_name"]
 
-    # ✅ Validate all jobs
-    valid_jobs = []
-    invalid_jobs = []
-    for job in job_names:
+        # Collect involved jobs
+        jobs_involved.add(job)
+
+        # Validate job & user
         if not job_exists(job):
-            invalid_jobs.append(job)
-            continue
+            return {"status": "failed", "error": f"Job '{job}' not found"}
+
+        if not user_exists(username):
+            return {"status": "failed", "error": f"User '{username}' not registered"}
+
         if not user_can_run_job(username, job):
-            invalid_jobs.append(job)
-            continue
-        valid_jobs.append(job)
+            return {"status": "failed",
+                    "error": f"User '{username}' not authorized for {job}"}
 
-    if not valid_jobs:
-        return {"status": "failed", "error": f"No valid jobs found. Invalid: {invalid_jobs}"}
+        # Run AutoSys command
+        result = getattr(autosys, action)(job)
+        results.append({"job": job, "action": action, "result": result})
 
-    # ✅ Create a single ServiceNow record for all valid jobs
-    description = f"Action '{action}' executed on jobs: {', '.join(valid_jobs)}"
-    result_summary = f"Jobs affected: {len(valid_jobs)}. Invalid: {len(invalid_jobs)}."
-
+    # Create a SINGLE ServiceNow record
     record_id = create_record(
-        job=",".join(valid_jobs),
-        action=action,
-        result=result_summary
+        job=" ,".join(jobs_involved),
+        action="multiple",
+        result=str(results)
     )
 
-    # ✅ Execute the jobs individually
-    results = []
-    for job in valid_jobs:
-        try:
-            result = getattr(autosys, action)(job)
-            autosys.jobs[job] = {"status": "RUNNING", "record": record_id}
-            results.append({"job": job, "status": "success", "result": result})
-        except Exception as e:
-            results.append({"job": job, "status": "failed", "error": str(e)})
+    # Map ServiceNow record to each job to autoclose later
+    for job in jobs_involved:
+        autosys.jobs[job]["record"] = record_id
 
     return {
         "status": "success",
-        "action": action,
-        "record_id": record_id,
         "user": username,
-        "results": results
+        "actions_executed": results,
+        "record_id": record_id
     }
